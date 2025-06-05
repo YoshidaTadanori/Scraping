@@ -15,6 +15,7 @@ from collections import defaultdict
 import re
 import csv
 from datetime import datetime, timedelta
+import time
 import math
 import traceback  # 追加
 
@@ -162,6 +163,31 @@ def start_collection_thread(start_date, end_date, root, progress_var, status_lab
     start_button.config(state=tk.DISABLED)
     threading.Thread(target=collect_data, args=(start_date, end_date, root, progress_var, status_label, start_button), daemon=True).start()
 
+
+def run_schedule(root, start_cal, end_cal, progress_var, status_label, start_button, time_var, stop_event):
+    while not stop_event.is_set():
+        try:
+            t = datetime.strptime(time_var.get(), "%H:%M").time()
+        except ValueError:
+            time.sleep(60)
+            continue
+        now = datetime.now()
+        next_run = datetime.combine(now.date(), t)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        wait_seconds = (next_run - now).total_seconds()
+        if stop_event.wait(wait_seconds):
+            break
+        try:
+            start_date = datetime.strptime(start_cal.get_date(), "%Y/%m/%d")
+            end_date = datetime.strptime(end_cal.get_date(), "%Y/%m/%d")
+            if start_date > end_date:
+                root.after(0, lambda: messagebox.showerror("エラー", "開始日は終了日より前にしてください。"))
+                continue
+            root.after(0, lambda sd=start_date, ed=end_date: start_collection_thread(sd, ed, root, progress_var, status_label, start_button))
+        except Exception as e:
+            root.after(0, lambda: messagebox.showerror("エラー", f"スケジュール実行でエラーが発生しました:\n{e}"))
+
 def create_app():
     root = tk.Tk()
     root.title("ホテル料金収集ツール")
@@ -186,7 +212,7 @@ def create_app():
     content_frame = tk.Frame(root, bg="#FFFFFF", bd=1, relief="solid", padx=20, pady=20)
     content_frame.pack(padx=20, pady=20, fill="both", expand=True)
 
-    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにCSVファイルが生成\n\n期間が長い場合は処理に時間がかかります。",
+    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにCSVファイルが生成\n4. 任意で毎日実行する時間を設定\n\n期間が長い場合は処理に時間がかかります。",
                           bg="#FFFFFF", fg="#5F6368", font=(font_family, 11), justify="left", wraplength=300)
     info_label.pack(pady=(0, 20))
 
@@ -231,6 +257,39 @@ def create_app():
 
     progress_bar = ttk.Progressbar(content_frame, orient="horizontal", length=280, mode="determinate", variable=progress_var, style="TProgressbar")
     progress_bar.pack(pady=(0,20))
+
+    time_var = tk.StringVar(value="06:00")
+    schedule_stop_event = threading.Event()
+    schedule_thread = None
+
+    time_frame = tk.Frame(content_frame, bg="#FFFFFF")
+    time_frame.pack(pady=(0,10))
+
+    time_label = tk.Label(time_frame, text="自動実行時間(HH:MM)", bg="#FFFFFF", fg=text_color, font=(font_family, 12))
+    time_label.pack(side="left")
+
+    time_entry = tk.Entry(time_frame, textvariable=time_var, width=6)
+    time_entry.pack(side="left", padx=(5,10))
+
+    def toggle_schedule():
+        nonlocal schedule_thread
+        if schedule_button.config('text')[-1] == 'スケジュール ON':
+            schedule_button.config(text='スケジュール OFF')
+            schedule_stop_event.set()
+        else:
+            try:
+                datetime.strptime(time_var.get(), "%H:%M")
+            except ValueError:
+                messagebox.showerror("エラー", "時刻はHH:MM形式で入力してください。")
+                return
+            schedule_stop_event.clear()
+            schedule_button.config(text='スケジュール ON')
+            if schedule_thread is None or not schedule_thread.is_alive():
+                schedule_thread = threading.Thread(target=run_schedule, args=(root, start_cal, end_cal, progress_var, status_label, start_button, time_var, schedule_stop_event), daemon=True)
+                schedule_thread.start()
+
+    schedule_button = tk.Button(time_frame, text='スケジュール OFF', bg=accent_color, fg='#FFFFFF', bd=0, font=(font_family, 11, 'bold'), command=toggle_schedule, cursor='hand2', activebackground="#3367D6", activeforeground='#FFFFFF')
+    schedule_button.pack(side='left')
 
     def start_collection():
         try:
