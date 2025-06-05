@@ -15,22 +15,8 @@ from collections import defaultdict
 import re
 import csv
 from datetime import datetime, timedelta
-import openpyxl
-import tempfile
+import math
 import traceback  # 追加
-
-def add_average_column_to_excel(wb, ws):
-    last_col = ws.max_column + 1
-    ws.cell(row=1, column=last_col, value="平均")
-
-    for row in range(2, ws.max_row + 1):
-        first_data_col = 2
-        last_data_col = last_col - 1
-        first_col_letter = openpyxl.utils.get_column_letter(first_data_col)
-        last_col_letter = openpyxl.utils.get_column_letter(last_data_col)
-        # 平均を計算する際に、エラーを防ぐためにIFERRORを使用
-        average_formula = f"=IF(COUNTIF({first_col_letter}{row}:{last_col_letter}{row},\"<>0\")=0, 0, ROUNDUP(AVERAGEIF({first_col_letter}{row}:{last_col_letter}{row},\"<>0\"), 0))"
-        ws.cell(row=row, column=last_col).value = average_formula
 
 def scrape_data_for_date(driver, current_date):
     all_data = []
@@ -82,7 +68,7 @@ def scrape_data_for_date(driver, current_date):
 
     return all_data
 
-def transform_and_save_data(data, excel_output_filename):
+def transform_and_save_data(data, csv_output_filename):
     transformed_data = defaultdict(dict)
     dates = set()
     hotels = set()
@@ -96,33 +82,28 @@ def transform_and_save_data(data, excel_output_filename):
     sorted_dates = sorted(dates)
     sorted_hotels = sorted(hotels)
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
+    header_row = ['日付'] + sorted_hotels + ['平均']
+    rows = [header_row]
 
-    # ヘッダー行の追加
-    header_row = ['日付'] + sorted_hotels
-    ws.append(header_row)
-
-    # データ行の追加
     for date in sorted_dates:
-        row = [date]
+        row_prices = []
         for hotel in sorted_hotels:
             price = transformed_data[date].get(hotel, 0)
-            row.append(price)
-        ws.append(row)
+            row_prices.append(price)
+        nonzero_prices = [p for p in row_prices if p != 0]
+        average = math.ceil(sum(nonzero_prices)/len(nonzero_prices)) if nonzero_prices else 0
+        rows.append([date] + row_prices + [average])
 
-    # 平均列の追加
-    add_average_column_to_excel(wb, ws)
-
-    # エクセルファイルの保存
-    wb.save(excel_output_filename)
+    with open(csv_output_filename, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
 
 def collect_data(start_date, end_date, root, progress_var, status_label, start_button):
     try:
         status_label.config(text="データ収集中…")
         desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
         today_str = datetime.now().strftime("%Y%m%d")
-        excel_output_filename = os.path.join(desktop_path, f"hotel_price_{today_str}.xlsx")
+        csv_output_filename = os.path.join(desktop_path, f"hotel_price_{today_str}.csv")
 
         options = Options()
         options.add_argument('--headless')
@@ -153,10 +134,10 @@ def collect_data(start_date, end_date, root, progress_var, status_label, start_b
 
             status_label.config(text="データ変換中…")
             root.update_idletasks()
-            transform_and_save_data(temp_data, excel_output_filename)
+            transform_and_save_data(temp_data, csv_output_filename)
 
             status_label.config(text="完了！")
-            messagebox.showinfo("完了", f"データ収集が完了しました。\n\n{excel_output_filename}\nがデスクトップに保存されました。")
+            messagebox.showinfo("完了", f"データ収集が完了しました。\n\n{csv_output_filename}\nがデスクトップに保存されました。")
         except Exception as e:
             # エラー内容をポップアップで表示
             messagebox.showerror("エラー", f"データ収集中にエラーが発生しました:\n{e}")
@@ -205,7 +186,7 @@ def create_app():
     content_frame = tk.Frame(root, bg="#FFFFFF", bd=1, relief="solid", padx=20, pady=20)
     content_frame.pack(padx=20, pady=20, fill="both", expand=True)
 
-    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにExcelファイルが生成\n\n期間が長い場合は処理に時間がかかります。",
+    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにCSVファイルが生成\n\n期間が長い場合は処理に時間がかかります。",
                           bg="#FFFFFF", fg="#5F6368", font=(font_family, 11), justify="left", wraplength=300)
     info_label.pack(pady=(0, 20))
 
