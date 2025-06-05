@@ -1,38 +1,45 @@
 import os
 import threading
-import tkinter as tk
-from tkinter import messagebox
-from tkinter import ttk
-from tkcalendar import Calendar
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+# GUI and Selenium imports are deferred to reduce optional dependencies when
+# running unit tests that only need transformation logic.
 from collections import defaultdict
 import re
 import csv
 from datetime import datetime, timedelta
-import openpyxl
-import tempfile
+import time
+import math
 import traceback  # 追加
 
-def add_average_column_to_excel(wb, ws):
-    last_col = ws.max_column + 1
-    ws.cell(row=1, column=last_col, value="平均")
 
-    for row in range(2, ws.max_row + 1):
-        first_data_col = 2
-        last_data_col = last_col - 1
-        first_col_letter = openpyxl.utils.get_column_letter(first_data_col)
-        last_col_letter = openpyxl.utils.get_column_letter(last_data_col)
-        # 平均を計算する際に、エラーを防ぐためにIFERRORを使用
-        average_formula = f"=IF(COUNTIF({first_col_letter}{row}:{last_col_letter}{row},\"<>0\")=0, 0, ROUNDUP(AVERAGEIF({first_col_letter}{row}:{last_col_letter}{row},\"<>0\"), 0))"
-        ws.cell(row=row, column=last_col).value = average_formula
+def extract_hotel_name(hotel_element, index):
+    """Return a hotel name even when normal selectors fail."""
+    from selenium.webdriver.common.by import By
+
+    try:
+        name = hotel_element.find_element(By.XPATH, ".//h2").text.strip()
+        if name:
+            return name
+    except Exception:
+        pass
+
+    try:
+        img = hotel_element.find_element(By.CSS_SELECTOR, "img[alt]")
+        alt = img.get_attribute("alt").strip()
+        if alt:
+            return alt
+    except Exception:
+        pass
+
+    alt_attr = hotel_element.get_attribute("data-hotel-name")
+    if alt_attr:
+        return alt_attr.strip()
+
+    return f"不明なホテル{index}"
 
 def scrape_data_for_date(driver, current_date):
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
     all_data = []
     base_url = "https://www.jalan.net/010000/LRG_012000/SML_012005/"
     params = f"?stayYear={current_date.year}&stayMonth={current_date.month}&stayDay={current_date.day}&stayCount=1&roomCount=1&adultNum=1"
@@ -48,16 +55,23 @@ def scrape_data_for_date(driver, current_date):
         if not hotel_list:
             print(f"No hotels found on page {page_number}. Ending scraping.")
             break
-        for hotel in hotel_list:
+        for idx, hotel in enumerate(hotel_list, 1):
             try:
-                hotel_name = hotel.find_element(By.XPATH, ".//h2").text.strip()
+                hotel_name = extract_hotel_name(hotel, idx)
+            except Exception as e:
+                print(f"Error finding hotel name: {e}")
+                hotel_name = f"不明なホテル{idx}"
+
+            price = 0
+            try:
                 price_text = hotel.find_element(By.XPATH, "div[2]/dl/dd/span[1]").text
                 price_match = re.search(r'\d+', price_text.replace(',', ''))
-                price = int(price_match.group()) if price_match else 0
-                all_data.append([current_date.strftime("%Y/%m/%d"), hotel_name, price])
-            except Exception as e:
-                print(f"Error extracting data from hotel element: {e}")
-                continue
+                if price_match:
+                    price = int(price_match.group())
+            except Exception:
+                pass
+
+            all_data.append([current_date.strftime("%Y/%m/%d"), hotel_name, price])
 
         # 「次へ」ボタンの探索
         next_buttons = driver.find_elements(By.XPATH, '//a[contains(text(), "次") or contains(text(), "Next")]')
@@ -82,7 +96,7 @@ def scrape_data_for_date(driver, current_date):
 
     return all_data
 
-def transform_and_save_data(data, excel_output_filename):
+def transform_and_save_data(data, csv_output_filename):
     transformed_data = defaultdict(dict)
     dates = set()
     hotels = set()
@@ -96,33 +110,34 @@ def transform_and_save_data(data, excel_output_filename):
     sorted_dates = sorted(dates)
     sorted_hotels = sorted(hotels)
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
+    header_row = ['日付'] + sorted_hotels + ['平均']
+    rows = [header_row]
 
-    # ヘッダー行の追加
-    header_row = ['日付'] + sorted_hotels
-    ws.append(header_row)
-
-    # データ行の追加
     for date in sorted_dates:
-        row = [date]
+        row_prices = []
         for hotel in sorted_hotels:
             price = transformed_data[date].get(hotel, 0)
-            row.append(price)
-        ws.append(row)
+            row_prices.append(price)
+        nonzero_prices = [p for p in row_prices if p != 0]
+        average = math.ceil(sum(nonzero_prices)/len(nonzero_prices)) if nonzero_prices else 0
+        rows.append([date] + row_prices + [average])
 
-    # 平均列の追加
-    add_average_column_to_excel(wb, ws)
-
-    # エクセルファイルの保存
-    wb.save(excel_output_filename)
+    with open(csv_output_filename, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
 
 def collect_data(start_date, end_date, root, progress_var, status_label, start_button):
+    from tkinter import messagebox
+    import tkinter as tk
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from webdriver_manager.chrome import ChromeDriverManager
     try:
         status_label.config(text="データ収集中…")
         desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
         today_str = datetime.now().strftime("%Y%m%d")
-        excel_output_filename = os.path.join(desktop_path, f"hotel_price_{today_str}.xlsx")
+        csv_output_filename = os.path.join(desktop_path, f"hotel_price_{today_str}.csv")
 
         options = Options()
         options.add_argument('--headless')
@@ -153,10 +168,10 @@ def collect_data(start_date, end_date, root, progress_var, status_label, start_b
 
             status_label.config(text="データ変換中…")
             root.update_idletasks()
-            transform_and_save_data(temp_data, excel_output_filename)
+            transform_and_save_data(temp_data, csv_output_filename)
 
             status_label.config(text="完了！")
-            messagebox.showinfo("完了", f"データ収集が完了しました。\n\n{excel_output_filename}\nがデスクトップに保存されました。")
+            messagebox.showinfo("完了", f"データ収集が完了しました。\n\n{csv_output_filename}\nがデスクトップに保存されました。")
         except Exception as e:
             # エラー内容をポップアップで表示
             messagebox.showerror("エラー", f"データ収集中にエラーが発生しました:\n{e}")
@@ -178,10 +193,41 @@ def collect_data(start_date, end_date, root, progress_var, status_label, start_b
         progress_var.set(0)
 
 def start_collection_thread(start_date, end_date, root, progress_var, status_label, start_button):
+    import tkinter as tk
     start_button.config(state=tk.DISABLED)
     threading.Thread(target=collect_data, args=(start_date, end_date, root, progress_var, status_label, start_button), daemon=True).start()
 
+
+def run_schedule(root, start_cal, end_cal, progress_var, status_label, start_button, time_var, stop_event):
+    from tkinter import messagebox
+    while not stop_event.is_set():
+        try:
+            t = datetime.strptime(time_var.get(), "%H:%M").time()
+        except ValueError:
+            time.sleep(60)
+            continue
+        now = datetime.now()
+        next_run = datetime.combine(now.date(), t)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        wait_seconds = (next_run - now).total_seconds()
+        if stop_event.wait(wait_seconds):
+            break
+        try:
+            start_date = datetime.strptime(start_cal.get_date(), "%Y/%m/%d")
+            end_date = datetime.strptime(end_cal.get_date(), "%Y/%m/%d")
+            if start_date > end_date:
+                root.after(0, lambda: messagebox.showerror("エラー", "開始日は終了日より前にしてください。"))
+                continue
+            root.after(0, lambda sd=start_date, ed=end_date: start_collection_thread(sd, ed, root, progress_var, status_label, start_button))
+        except Exception as e:
+            root.after(0, lambda: messagebox.showerror("エラー", f"スケジュール実行でエラーが発生しました:\n{e}"))
+
 def create_app():
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+    from tkcalendar import Calendar
+
     root = tk.Tk()
     root.title("ホテル料金収集ツール")
     root.geometry("720x850")
@@ -205,7 +251,7 @@ def create_app():
     content_frame = tk.Frame(root, bg="#FFFFFF", bd=1, relief="solid", padx=20, pady=20)
     content_frame.pack(padx=20, pady=20, fill="both", expand=True)
 
-    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにExcelファイルが生成\n\n期間が長い場合は処理に時間がかかります。",
+    info_label = tk.Label(content_frame, text="使い方ガイド\n\n1. 開始日と終了日を選択\n2. 「データ収集開始」をクリック\n3. 完了後、デスクトップにCSVファイルが生成\n4. 任意で毎日実行する時間を設定\n\n期間が長い場合は処理に時間がかかります。",
                           bg="#FFFFFF", fg="#5F6368", font=(font_family, 11), justify="left", wraplength=300)
     info_label.pack(pady=(0, 20))
 
@@ -250,6 +296,39 @@ def create_app():
 
     progress_bar = ttk.Progressbar(content_frame, orient="horizontal", length=280, mode="determinate", variable=progress_var, style="TProgressbar")
     progress_bar.pack(pady=(0,20))
+
+    time_var = tk.StringVar(value="06:00")
+    schedule_stop_event = threading.Event()
+    schedule_thread = None
+
+    time_frame = tk.Frame(content_frame, bg="#FFFFFF")
+    time_frame.pack(pady=(0,10))
+
+    time_label = tk.Label(time_frame, text="自動実行時間(HH:MM)", bg="#FFFFFF", fg=text_color, font=(font_family, 12))
+    time_label.pack(side="left")
+
+    time_entry = tk.Entry(time_frame, textvariable=time_var, width=6)
+    time_entry.pack(side="left", padx=(5,10))
+
+    def toggle_schedule():
+        nonlocal schedule_thread
+        if schedule_button.config('text')[-1] == 'スケジュール ON':
+            schedule_button.config(text='スケジュール OFF')
+            schedule_stop_event.set()
+        else:
+            try:
+                datetime.strptime(time_var.get(), "%H:%M")
+            except ValueError:
+                messagebox.showerror("エラー", "時刻はHH:MM形式で入力してください。")
+                return
+            schedule_stop_event.clear()
+            schedule_button.config(text='スケジュール ON')
+            if schedule_thread is None or not schedule_thread.is_alive():
+                schedule_thread = threading.Thread(target=run_schedule, args=(root, start_cal, end_cal, progress_var, status_label, start_button, time_var, schedule_stop_event), daemon=True)
+                schedule_thread.start()
+
+    schedule_button = tk.Button(time_frame, text='スケジュール OFF', bg=accent_color, fg='#FFFFFF', bd=0, font=(font_family, 11, 'bold'), command=toggle_schedule, cursor='hand2', activebackground="#3367D6", activeforeground='#FFFFFF')
+    schedule_button.pack(side='left')
 
     def start_collection():
         try:
