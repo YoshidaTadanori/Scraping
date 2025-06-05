@@ -10,6 +10,32 @@ import time
 import math
 import traceback  # 追加
 
+
+def extract_hotel_name(hotel_element, index):
+    """Return a hotel name even when normal selectors fail."""
+    from selenium.webdriver.common.by import By
+
+    try:
+        name = hotel_element.find_element(By.XPATH, ".//h2").text.strip()
+        if name:
+            return name
+    except Exception:
+        pass
+
+    try:
+        img = hotel_element.find_element(By.CSS_SELECTOR, "img[alt]")
+        alt = img.get_attribute("alt").strip()
+        if alt:
+            return alt
+    except Exception:
+        pass
+
+    alt_attr = hotel_element.get_attribute("data-hotel-name")
+    if alt_attr:
+        return alt_attr.strip()
+
+    return f"不明なホテル{index}"
+
 def scrape_data_for_date(driver, current_date):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -29,16 +55,23 @@ def scrape_data_for_date(driver, current_date):
         if not hotel_list:
             print(f"No hotels found on page {page_number}. Ending scraping.")
             break
-        for hotel in hotel_list:
+        for idx, hotel in enumerate(hotel_list, 1):
             try:
-                hotel_name = hotel.find_element(By.XPATH, ".//h2").text.strip()
+                hotel_name = extract_hotel_name(hotel, idx)
+            except Exception as e:
+                print(f"Error finding hotel name: {e}")
+                hotel_name = f"不明なホテル{idx}"
+
+            price = 0
+            try:
                 price_text = hotel.find_element(By.XPATH, "div[2]/dl/dd/span[1]").text
                 price_match = re.search(r'\d+', price_text.replace(',', ''))
-                price = int(price_match.group()) if price_match else 0
-                all_data.append([current_date.strftime("%Y/%m/%d"), hotel_name, price])
-            except Exception as e:
-                print(f"Error extracting data from hotel element: {e}")
-                continue
+                if price_match:
+                    price = int(price_match.group())
+            except Exception:
+                pass
+
+            all_data.append([current_date.strftime("%Y/%m/%d"), hotel_name, price])
 
         # 「次へ」ボタンの探索
         next_buttons = driver.find_elements(By.XPATH, '//a[contains(text(), "次") or contains(text(), "Next")]')

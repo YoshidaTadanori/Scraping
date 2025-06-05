@@ -29,3 +29,23 @@ def test_transform_and_save_data_creates_expected_csv(tmp_path):
         ['2025/06/02', '150', '0', '0', '150'],
     ]
     assert rows == expected
+
+
+def test_transform_and_save_data_fills_missing_hotels_with_zero(tmp_path):
+    data = [
+        ['2025/06/01', 'Hotel A', 100],
+        ['2025/06/02', 'Hotel B', 200],
+    ]
+
+    output_file = tmp_path / "out.csv"
+    transform_and_save_data(data, str(output_file))
+
+    with open(output_file, newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+
+    expected = [
+        ['\u65e5\u4ed8', 'Hotel A', 'Hotel B', '\u5e73\u5747'],
+        ['2025/06/01', '100', '0', '100'],
+        ['2025/06/02', '0', '200', '200'],
+    ]
+    assert rows == expected
