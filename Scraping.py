@@ -1,16 +1,7 @@
 import os
 import threading
-import tkinter as tk
-from tkinter import messagebox
-from tkinter import ttk
-from tkcalendar import Calendar
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+# GUI and Selenium imports are deferred to reduce optional dependencies when
+# running unit tests that only need transformation logic.
 from collections import defaultdict
 import re
 import csv
@@ -20,6 +11,9 @@ import math
 import traceback  # 追加
 
 def scrape_data_for_date(driver, current_date):
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
     all_data = []
     base_url = "https://www.jalan.net/010000/LRG_012000/SML_012005/"
     params = f"?stayYear={current_date.year}&stayMonth={current_date.month}&stayDay={current_date.day}&stayCount=1&roomCount=1&adultNum=1"
@@ -100,6 +94,12 @@ def transform_and_save_data(data, csv_output_filename):
         writer.writerows(rows)
 
 def collect_data(start_date, end_date, root, progress_var, status_label, start_button):
+    from tkinter import messagebox
+    import tkinter as tk
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from webdriver_manager.chrome import ChromeDriverManager
     try:
         status_label.config(text="データ収集中…")
         desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
@@ -160,11 +160,13 @@ def collect_data(start_date, end_date, root, progress_var, status_label, start_b
         progress_var.set(0)
 
 def start_collection_thread(start_date, end_date, root, progress_var, status_label, start_button):
+    import tkinter as tk
     start_button.config(state=tk.DISABLED)
     threading.Thread(target=collect_data, args=(start_date, end_date, root, progress_var, status_label, start_button), daemon=True).start()
 
 
 def run_schedule(root, start_cal, end_cal, progress_var, status_label, start_button, time_var, stop_event):
+    from tkinter import messagebox
     while not stop_event.is_set():
         try:
             t = datetime.strptime(time_var.get(), "%H:%M").time()
@@ -189,6 +191,10 @@ def run_schedule(root, start_cal, end_cal, progress_var, status_label, start_but
             root.after(0, lambda: messagebox.showerror("エラー", f"スケジュール実行でエラーが発生しました:\n{e}"))
 
 def create_app():
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+    from tkcalendar import Calendar
+
     root = tk.Tk()
     root.title("ホテル料金収集ツール")
     root.geometry("720x850")
